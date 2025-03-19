@@ -1452,47 +1452,27 @@ class BatchPrefillWithPagedKVCacheWrapper:
                 paged_kv_indptr_host = vector_sparse_indptr_host
 
         with self.device as device:
-            if bidir:
-                self._plan_info = self._cached_module.plan(
-                    self._float_workspace_buffer,
-                    self._int_workspace_buffer,
-                    self._pin_memory_int_workspace_buffer,
-                    qo_indptr_host,
-                    paged_kv_indptr_host,
-                    kv_lens_arr_host,
-                    self._max_total_num_rows or total_num_rows,
-                    batch_size,
-                    num_qo_heads,
-                    num_kv_heads,
-                    page_size,
-                    self.is_cuda_graph_enabled,
-                    head_dim_qk,
-                    head_dim_vo,
-                    causal,
-                    get_cuda_stream(device),
-                    # Extra params
-                    bidir,
-                    bidir_max_img_size,
-                )
-            else:
-                self._plan_info = self._cached_module.plan(
-                    self._float_workspace_buffer,
-                    self._int_workspace_buffer,
-                    self._pin_memory_int_workspace_buffer,
-                    qo_indptr_host,
-                    paged_kv_indptr_host,
-                    kv_lens_arr_host,
-                    self._max_total_num_rows or total_num_rows,
-                    batch_size,
-                    num_qo_heads,
-                    num_kv_heads,
-                    page_size,
-                    self.is_cuda_graph_enabled,
-                    head_dim_qk,
-                    head_dim_vo,
-                    causal,
-                    get_cuda_stream(device),
-                )
+            self._plan_info = self._cached_module.plan(
+                self._float_workspace_buffer,
+                self._int_workspace_buffer,
+                self._pin_memory_int_workspace_buffer,
+                qo_indptr_host,
+                paged_kv_indptr_host,
+                kv_lens_arr_host,
+                self._max_total_num_rows or total_num_rows,
+                batch_size,
+                num_qo_heads,
+                num_kv_heads,
+                page_size,
+                self.is_cuda_graph_enabled,
+                head_dim_qk,
+                head_dim_vo,
+                causal,
+                get_cuda_stream(device),
+                # Extra params
+                bidir,
+                bidir_max_img_size if bidir else None,
+            )
 
         self._causal = causal
         self._pos_encoding_mode = pos_encoding_mode
