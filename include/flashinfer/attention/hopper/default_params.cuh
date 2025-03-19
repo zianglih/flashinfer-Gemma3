@@ -82,10 +82,15 @@ struct BatchPrefillRaggedParams {
   IdType* kv_lens;
   IdType* head_indices;
   IdType* work_indptr;
+  IdType* batch_indices;
 
   struct AdditionalParams {
     float logits_soft_cap;
     float sm_scale;
+
+    uint32_t* bidir_attn_width_ptr;
+    uint32_t bidir_attn_pad_len;
+    uint32_t bidir_max_img_size;
   } additional_params;
 
   int64_t q_stride_n;
@@ -128,10 +133,15 @@ struct BatchPrefillPagedParams {
   IdType* kv_lens;
   IdType* head_indices;
   IdType* work_indptr;
+  IdType* batch_indices;
 
   struct AdditionalParams {
     float logits_soft_cap;
     float sm_scale;
+
+    uint32_t* bidir_attn_width_ptr;
+    uint32_t bidir_attn_pad_len;
+    uint32_t bidir_max_img_size;
   } additional_params;
 
   int64_t q_stride_n;

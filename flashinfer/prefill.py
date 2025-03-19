@@ -340,6 +340,9 @@ def get_batch_prefill_module(backend):
                 sm_scale: float,
                 rope_scale: float,
                 rope_theta: float,
+                bidir_attn_width_ptr: Optional[torch.Tensor] = None,
+                bidir_attn_pad_len: int = 0,
+                bidir_max_img_size: int = 0,
             ) -> None:
                 with q.device as device:  # device guard
                     if backend == "fa2":
@@ -367,6 +370,9 @@ def get_batch_prefill_module(backend):
                             1.0 / rope_scale,  # rope_rcp_scale
                             1.0 / rope_theta,  # rope_rcp_theta
                             get_cuda_stream(device),
+                            bidir_attn_width_ptr,
+                            bidir_attn_pad_len,
+                            bidir_max_img_size,
                         )
                     else:
                         paged_run_func(
@@ -388,6 +394,9 @@ def get_batch_prefill_module(backend):
                             logits_soft_cap,
                             sm_scale,
                             get_cuda_stream(device),
+                            bidir_attn_width_ptr,
+                            bidir_attn_pad_len,
+                            bidir_max_img_size,
                         )
                     return o
 
@@ -1196,6 +1205,10 @@ class BatchPrefillWithPagedKVCacheWrapper:
         q_data_type: Union[str, torch.dtype] = "float16",
         kv_data_type: Optional[Union[str, torch.dtype]] = None,
         non_blocking: bool = False,
+        bidir: bool = False,
+        bidir_attn_width_ptr: Optional[torch.Tensor] = None,
+        bidir_attn_pad_len: Optional[int] = None,
+        bidir_max_img_size: Optional[int] = None,
     ) -> None:
         r"""Plan batch prefill/append attention on Paged KV-Cache for given problem specification.
 
@@ -1439,24 +1452,47 @@ class BatchPrefillWithPagedKVCacheWrapper:
                 paged_kv_indptr_host = vector_sparse_indptr_host
 
         with self.device as device:
-            self._plan_info = self._cached_module.plan(
-                self._float_workspace_buffer,
-                self._int_workspace_buffer,
-                self._pin_memory_int_workspace_buffer,
-                qo_indptr_host,
-                paged_kv_indptr_host,
-                kv_lens_arr_host,
-                self._max_total_num_rows or total_num_rows,
-                batch_size,
-                num_qo_heads,
-                num_kv_heads,
-                page_size,
-                self.is_cuda_graph_enabled,
-                head_dim_qk,
-                head_dim_vo,
-                causal,
-                get_cuda_stream(device),
-            )
+            if bidir:
+                self._plan_info = self._cached_module.plan(
+                    self._float_workspace_buffer,
+                    self._int_workspace_buffer,
+                    self._pin_memory_int_workspace_buffer,
+                    qo_indptr_host,
+                    paged_kv_indptr_host,
+                    kv_lens_arr_host,
+                    self._max_total_num_rows or total_num_rows,
+                    batch_size,
+                    num_qo_heads,
+                    num_kv_heads,
+                    page_size,
+                    self.is_cuda_graph_enabled,
+                    head_dim_qk,
+                    head_dim_vo,
+                    causal,
+                    get_cuda_stream(device),
+                    # Extra params
+                    bidir,
+                    bidir_max_img_size,
+                )
+            else:
+                self._plan_info = self._cached_module.plan(
+                    self._float_workspace_buffer,
+                    self._int_workspace_buffer,
+                    self._pin_memory_int_workspace_buffer,
+                    qo_indptr_host,
+                    paged_kv_indptr_host,
+                    kv_lens_arr_host,
+                    self._max_total_num_rows or total_num_rows,
+                    batch_size,
+                    num_qo_heads,
+                    num_kv_heads,
+                    page_size,
+                    self.is_cuda_graph_enabled,
+                    head_dim_qk,
+                    head_dim_vo,
+                    causal,
+                    get_cuda_stream(device),
+                )
 
         self._causal = causal
         self._pos_encoding_mode = pos_encoding_mode
@@ -1466,6 +1502,12 @@ class BatchPrefillWithPagedKVCacheWrapper:
         self._sm_scale = sm_scale
         self._rope_scale = rope_scale
         self._rope_theta = rope_theta
+        
+        self._bidir = bidir
+        if bidir:
+            self._bidir_attn_width_ptr = bidir_attn_width_ptr
+            self._bidir_attn_pad_len = bidir_attn_pad_len
+            self._bidir_max_img_size = bidir_max_img_size
 
     begin_forward = plan
 
@@ -1675,6 +1717,13 @@ class BatchPrefillWithPagedKVCacheWrapper:
                 rope_scale,
                 rope_theta,
             ]
+
+            if self._bidir:
+                run_args += [
+                    self._bidir_attn_width_ptr,
+                    self._bidir_attn_pad_len,
+                    self._bidir_max_img_size,
+                ]
 
         self._cached_module.paged_run(*run_args)
         if v_scale is not None:

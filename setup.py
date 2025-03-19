@@ -35,7 +35,7 @@ head_dims_sm90.extend(
     [(k, v) for k, v in SM90_ALLOWED_HEAD_DIMS if k != v]
 )  # Always enable (192,128)
 
-mask_modes = [0, 1, 2]
+mask_modes = [0, 1, 2, 3]
 
 enable_aot = os.environ.get("FLASHINFER_ENABLE_AOT", "0") == "1"
 enable_f16 = os.environ.get("FLASHINFER_ENABLE_F16", "1") == "1"

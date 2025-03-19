@@ -198,7 +198,10 @@ void BatchPrefillWithPagedKVCacheRun(
     at::Tensor q, at::Tensor paged_k_cache, at::Tensor paged_v_cache, at::Tensor qo_indptr,
     at::Tensor paged_kv_indptr, at::Tensor paged_kv_indices, at::Tensor paged_kv_last_page_len,
     at::Tensor o, std::optional<at::Tensor> maybe_lse, int64_t mask_mode_code, int64_t layout,
-    int64_t window_left ADDITIONAL_FUNC_PARAMS, int64_t cuda_stream) {
+    int64_t window_left ADDITIONAL_FUNC_PARAMS, int64_t cuda_stream,
+    std::optional<at::Tensor> bidir_attn_width_ptr,
+    std::optional<int64_t> bidir_attn_pad_len, 
+    std::optional<int64_t> bidir_max_img_size) {
   PrefillPlanInfo plan_info;
   plan_info.FromVector(tensor_to_vec(plan_info_vec));
   QKVLayout kv_layout = static_cast<QKVLayout>(layout);
@@ -308,6 +311,13 @@ void BatchPrefillWithPagedKVCacheRun(
           params.total_num_rows =
               GetPtrFromBaseOffset<uint32_t>(int_buffer_ptr, plan_info.total_num_rows_offset);
         }
+
+        params.bidir_attn_width_ptr = bidir_attn_width_ptr.has_value()
+            ? static_cast<uint32_t*>(bidir_attn_width_ptr.value().data_ptr()): nullptr;
+        params.bidir_attn_pad_len = bidir_attn_pad_len.has_value()
+            ? static_cast<uint32_t>(bidir_attn_pad_len.value()): 0;
+        params.bidir_max_img_size = bidir_max_img_size.has_value()
+            ? static_cast<uint32_t>(bidir_max_img_size.value()) : 0;
 
         cudaError_t status = cudaSuccess;
 

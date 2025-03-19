@@ -14,7 +14,7 @@
 
 namespace flashinfer {
 
-template <typename Ktraits, bool LEFT_SLIDING_WINDOW, bool CAUSAL, typename WarpScheduler,
+template <typename Ktraits, bool LEFT_SLIDING_WINDOW, bool CAUSAL, bool BIDIR, typename WarpScheduler,
           typename AttentionVariant, typename Params, typename MainloopPipeline,
           typename PipelineState, typename SharedStorage, typename FrgTensorO,
           typename AttentionUpdater>
@@ -26,7 +26,8 @@ CUTLASS_DEVICE void mma_f16(const Params& mainloop_params, AttentionVariant& var
                             int swa_end_kv_tile_idx, int thread_idx, int work_idx, int q_tile_idx,
                             SharedStorage& shared_storage, const int32_t qo_len,
                             const int32_t kv_len, const int32_t qo_head_idx,
-                            const int32_t kv_head_idx) {
+                            const int32_t kv_head_idx,
+                            __restrict__ uint32_t* bidir_ptr = nullptr) {
   using DTypeQ = typename Ktraits::DTypeQ;
   using DTypeKV = typename Ktraits::DTypeKV;
   using IdType = typename Ktraits::IdType;
@@ -102,6 +103,13 @@ CUTLASS_DEVICE void mma_f16(const Params& mainloop_params, AttentionVariant& var
       int kv_idx = get<1>(tScS(i)) + kv_tile_idx * CTA_KV;
       tSrS(i) = variant.LogitsTransform(mainloop_params, tSrS(i), /*batch_idx=*/0, qo_idx, kv_idx,
                                         qo_head_idx, kv_head_idx);
+      if constexpr (BIDIR) {
+        if (qo_idx < qo_len) {
+          if (kv_idx >= bidir_ptr[qo_idx]) {
+            tSrS(i) = AttentionUpdater::fill_value;
+          }
+        }
+      } else
       if constexpr (!CAUSAL) {  // Just masking based on col
         if (kv_idx >= kv_len) {
           tSrS(i) = AttentionUpdater::fill_value;
@@ -152,6 +160,13 @@ CUTLASS_DEVICE void mma_f16(const Params& mainloop_params, AttentionVariant& var
                                         qo_head_idx, kv_head_idx);
       if (kv_idx >= col_limit_right(qo_idx)) {
         tSrS(i) = AttentionUpdater::fill_value;
+      }
+      if constexpr (BIDIR) {
+        if (qo_idx < qo_len) {
+          if (kv_idx >= bidir_ptr[qo_idx]) {
+            tSrS(i) = AttentionUpdater::fill_value;
+          }
+        }
       }
       if constexpr (LEFT_SLIDING_WINDOW) {
         if (kv_idx < col_limit_left(qo_idx)) {

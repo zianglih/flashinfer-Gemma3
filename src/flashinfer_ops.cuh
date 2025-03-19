@@ -435,11 +435,16 @@ cudaError_t BatchPrefillWithPagedKVCacheWrapper(
     paged_kv_t<DTypeKV, IdType> paged_kv, DTypeO* o, float* lse, uint32_t num_qo_heads,
     bool causal = true, PosEncodingMode pos_encoding_mode = PosEncodingMode::kNone,
     bool use_fp16_qk_reduction = false, std::optional<float> maybe_sm_scale = std::nullopt,
-    float rope_scale = 1.f, float rope_theta = 1e4, cudaStream_t stream = nullptr) {
+    float rope_scale = 1.f, float rope_theta = 1e4, cudaStream_t stream = nullptr,
+    bool bidir = false,
+    uint32_t* bidir_attn_width_ptr = nullptr,
+    uint32_t bidir_attn_pad_len = 0,
+    uint32_t bidir_max_img_size = 0) {
   const float sm_scale = maybe_sm_scale.value_or(1.f / std::sqrt(float(paged_kv.head_dim)));
   const uint32_t num_kv_heads = paged_kv.num_heads;
   const uint32_t head_dim = paged_kv.head_dim;
   const MaskMode mask_mode = causal ? MaskMode::kCausal : MaskMode::kNone;
+  if (bidir) mask_mode = MaskMode::kBidir;
   auto plan_info = handler->GetPlanInfo();
   DISPATCH_head_dim(
       head_dim, HEAD_DIM,
@@ -470,6 +475,11 @@ cudaError_t BatchPrefillWithPagedKVCacheWrapper(
                 params.max_total_num_rows = plan_info.total_num_rows;
                 params.total_num_rows = handler->GetTotalNumRows();
                 params.padded_batch_size = plan_info.padded_batch_size;
+
+                params.bidir_attn_width_ptr = bidir_attn_width_ptr;
+                params.bidir_attn_pad_len = bidir_attn_pad_len;
+                params.bidir_max_img_size = bidir_max_img_size;
+
                 DISPATCH_CTA_TILE_Q(plan_info.cta_tile_q, CTA_TILE_Q, {
                   return BatchPrefillWithPagedKVCacheDispatched<
                       CTA_TILE_Q, HEAD_DIM, HEAD_DIM, POS_ENCODING_MODE, USE_FP16_QK_REDUCTION,

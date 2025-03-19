@@ -58,6 +58,10 @@ struct SinglePrefillParams {
 
   uint32_t partition_kv;
 
+  uint32_t* bidir_attn_width_ptr;
+  uint32_t bidir_attn_pad_len;
+  uint32_t bidir_max_img_size;
+
   __host__ SinglePrefillParams()
       : q(nullptr),
         k(nullptr),
@@ -172,6 +176,10 @@ struct BatchPrefillRaggedParams {
   uint32_t* total_num_rows;
   uint32_t padded_batch_size;
   bool partition_kv;
+
+  uint32_t* bidir_attn_width_ptr;
+  uint32_t bidir_attn_pad_len;
+  uint32_t bidir_max_img_size;
 
   __host__ BatchPrefillRaggedParams()
       : q(nullptr),
@@ -305,6 +313,10 @@ struct BatchPrefillPagedParams {
   uint32_t* total_num_rows;
   uint32_t padded_batch_size;
   bool partition_kv;
+
+  uint32_t* bidir_attn_width_ptr;
+  uint32_t bidir_attn_pad_len;
+  uint32_t bidir_max_img_size;
 
   __host__ BatchPrefillPagedParams()
       : q(nullptr),

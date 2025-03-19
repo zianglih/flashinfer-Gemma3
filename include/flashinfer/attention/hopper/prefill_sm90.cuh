@@ -36,7 +36,8 @@ namespace flashinfer {
 using namespace cute;
 
 template <typename CollectiveMainloop, typename CollectiveEpilogue, typename Ktraits,
-          bool LEFT_SLIDING_WINDOW, bool CAUSAL, typename TileScheduler>
+          bool LEFT_SLIDING_WINDOW, bool CAUSAL, typename TileScheduler,
+          bool BIDIR = false>
 __global__ void __launch_bounds__(Ktraits::NUM_WARPS* cutlass::NumThreadsPerWarp, 1)
     PrefillWithKVCacheKernel(CUTE_GRID_CONSTANT
                              typename CollectiveMainloop::Params const mainloop_params,
@@ -217,12 +218,19 @@ __global__ void __launch_bounds__(Ktraits::NUM_WARPS* cutlass::NumThreadsPerWarp
                                                                      q_tile_idx, qo_len, kv_len);
       }
 
-      mma_f16<Ktraits, /*LEFT_SLIDING_WINDOW=*/LEFT_SLIDING_WINDOW, CAUSAL,
+      uint32_t* bidir_ptr = nullptr;
+      if constexpr (BIDIR) {
+        bidir_ptr = 
+            mainloop_params.additional_params.bidir_attn_width_ptr +
+            work_tile_info.batch_idx * mainloop_params.additional_params.bidir_attn_pad_len;
+      }
+
+      mma_f16<Ktraits, /*LEFT_SLIDING_WINDOW=*/LEFT_SLIDING_WINDOW, CAUSAL, BIDIR,
               CollectiveMainloop::WarpScheduler>(
           mainloop_params, variant, pipeline_k, pipeline_v, smem_pipe_read_k, smem_pipe_read_v,
           tOrO, attention_updater, num_kv_tiles, swa_begin_kv_tile_idx, swa_end_kv_tile_idx,
           threadIdx.x - NUM_COPY_THREADS, work_idx, q_tile_idx, shared_storage, qo_len, kv_len,
-          qo_head_idx, kv_head_idx);
+          qo_head_idx, kv_head_idx, bidir_ptr);
       collective_epilogue.store(epilogue_params, tOrO, attention_updater.get_lse(), shared_storage,
                                 tiled_mma_pv, threadIdx.x - NUM_COPY_THREADS, block_coord);
 
@@ -295,7 +303,7 @@ cudaError_t SinglePrefillWithKVCacheKernelTraitsDispatched(Params& params, cudaS
 }
 
 template <typename KernelTraits, bool LEFT_SLIDING_WINDOW, bool CAUSAL,
-          bool SAME_SCHEDULE_FOR_ALL_HEADS, typename Params>
+          bool SAME_SCHEDULE_FOR_ALL_HEADS, typename Params, bool BIDIR = false>
 cudaError_t BatchPrefillWithPagedKVCacheKernelTraitsDispatched(Params& params,
                                                                cudaStream_t stream) {
   using DTypeQ = typename KernelTraits::DTypeQ;
@@ -304,7 +312,7 @@ cudaError_t BatchPrefillWithPagedKVCacheKernelTraitsDispatched(Params& params,
   using IdType = typename KernelTraits::IdType;
 
   using CollectiveMainloop =
-      SparseCollectiveMainloop<typename Params::AdditionalParams, KernelTraits, CAUSAL>;
+      SparseCollectiveMainloop<typename Params::AdditionalParams, KernelTraits, CAUSAL, BIDIR>;
   using CollectiveEpilogue = CollectiveEpilogue<KernelTraits>;
   using Scheduler =
       std::conditional_t<SAME_SCHEDULE_FOR_ALL_HEADS, BatchPrefillTileScheduler<IdType>,
@@ -337,7 +345,8 @@ cudaError_t BatchPrefillWithPagedKVCacheKernelTraitsDispatched(Params& params,
       params.qo_tile_indices, params.qo_indptr,
       params.kv_indptr,       params.qo_lens,
       params.kv_lens,         cutlass::FastDivmod(params.num_qo_heads / params.num_kv_heads),
-      params.num_qo_heads};
+      params.num_qo_heads,
+      params.batch_indices};
   typename Scheduler::Params scheduler_params = Scheduler::to_underlying_arguments(scheduler_args);
 
   // Get the ptr to kernel function.
@@ -407,7 +416,8 @@ cudaError_t BatchPrefillWithRaggedKVCacheKernelTraitsDispatched(Params& params,
       params.qo_tile_indices, params.qo_indptr,
       params.kv_indptr,       params.qo_lens,
       params.kv_lens,         cutlass::FastDivmod(params.num_qo_heads / params.num_kv_heads),
-      params.num_qo_heads};
+      params.num_qo_heads,
+      params.batch_indices};
   typename Scheduler::Params scheduler_params = Scheduler::to_underlying_arguments(scheduler_args);
 
   // Get the ptr to kernel function.
@@ -501,6 +511,7 @@ cudaError_t BatchPrefillWithPagedKVCacheDispatched(Params& params, cudaStream_t 
     return cudaErrorNotSupported;  // Not supported yet.
   }
   constexpr bool CAUSAL = MASK_MODE == MaskMode::kCausal;
+  constexpr bool BIDIR = MASK_MODE == MaskMode::kBidir;
   if constexpr (HEAD_DIM_QK == HEAD_DIM_VO) {
     if constexpr (HEAD_DIM_VO == 64) {
       // NOTE(Zihao): CTA_KV not tuned for HEAD_DIM == 64, need to optimize later
@@ -511,7 +522,8 @@ cudaError_t BatchPrefillWithPagedKVCacheDispatched(Params& params, cudaStream_t 
                                 /*NUM_STAGES_=*/2, typename Params::DTypeQ,
                                 typename Params::DTypeKV, typename Params::DTypeO,
                                 typename Params::IdType, AttentionVariant>,
-          LEFT_SLIDING_WINDOW, CAUSAL, SAME_SCHEDULE_FOR_ALL_HEADS>(params, stream);
+          LEFT_SLIDING_WINDOW, CAUSAL, SAME_SCHEDULE_FOR_ALL_HEADS,
+          Params, BIDIR>(params, stream);
     } else if constexpr (HEAD_DIM_VO == 128) {
       BatchPrefillWithPagedKVCacheKernelTraitsDispatched<
           AttentionKernelTraits</*USE_TMA_LOAD_KV=*/false, HEAD_DIM_QK, HEAD_DIM_VO,
@@ -520,7 +532,8 @@ cudaError_t BatchPrefillWithPagedKVCacheDispatched(Params& params, cudaStream_t 
                                 /*NUM_STAGES_=*/2, typename Params::DTypeQ,
                                 typename Params::DTypeKV, typename Params::DTypeO,
                                 typename Params::IdType, AttentionVariant>,
-          LEFT_SLIDING_WINDOW, CAUSAL, SAME_SCHEDULE_FOR_ALL_HEADS>(params, stream);
+          LEFT_SLIDING_WINDOW, CAUSAL, SAME_SCHEDULE_FOR_ALL_HEADS,
+          Params, BIDIR>(params, stream);
     } else {
       // HEAD_DIM == 256;
       // NOTE(Zihao): CTA_KV not tuned for HEAD_DIM == 256, need to optimize later
@@ -531,7 +544,8 @@ cudaError_t BatchPrefillWithPagedKVCacheDispatched(Params& params, cudaStream_t 
                                 /*NUM_STAGES_=*/2, typename Params::DTypeQ,
                                 typename Params::DTypeKV, typename Params::DTypeO,
                                 typename Params::IdType, AttentionVariant>,
-          LEFT_SLIDING_WINDOW, CAUSAL, SAME_SCHEDULE_FOR_ALL_HEADS>(params, stream);
+          LEFT_SLIDING_WINDOW, CAUSAL, SAME_SCHEDULE_FOR_ALL_HEADS,
+          Params, BIDIR>(params, stream);
     }
   } else {
     return cudaErrorNotSupported;

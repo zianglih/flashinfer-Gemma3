@@ -43,7 +43,8 @@ at::Tensor BatchPrefillWithKVCacheSM90Plan(
     at::Tensor page_locked_int_workspace_buffer, at::Tensor qo_indptr, at::Tensor kv_indptr,
     at::Tensor kv_len_arr, int64_t total_num_rows, int64_t batch_size, int64_t num_qo_heads,
     int64_t num_kv_heads, int64_t page_size, bool enable_cuda_graph, int64_t head_dim_qk,
-    int64_t head_dim_vo, bool causal, int64_t cuda_stream) {
+    int64_t head_dim_vo, bool causal, int64_t cuda_stream,
+    std::optional<bool> bidir, std::optional<int64_t> bidir_max_img_size) {
   size_t float_workspace_size_in_bytes =
       float_workspace_buffer.size(0) * float_workspace_buffer.element_size();
   size_t int_workspace_size_in_bytes =
@@ -59,7 +60,8 @@ at::Tensor BatchPrefillWithKVCacheSM90Plan(
                       int_workspace_size_in_bytes, plan_info, qo_indptr.data_ptr<IdType>(),
                       kv_indptr.data_ptr<IdType>(), kv_len_arr.data_ptr<IdType>(), total_num_rows,
                       batch_size, num_qo_heads, num_kv_heads, head_dim_qk, head_dim_vo, page_size,
-                      causal, enable_cuda_graph, /*sizeof_dtype_o=*/2, stream);
+                      causal, enable_cuda_graph, /*sizeof_dtype_o=*/2, stream,
+                      bidir, bidir_max_img_size);
 
   TORCH_CHECK(status == cudaSuccess,
               "PrefillSM90Plan failed with error: ", cudaGetErrorString(status));
@@ -158,7 +160,10 @@ void BatchPrefillWithPagedKVCacheSM90Run(
     at::Tensor q, at::Tensor paged_k_cache, at::Tensor paged_v_cache, at::Tensor qo_indptr,
     at::Tensor paged_kv_indptr, at::Tensor paged_kv_indices, at::Tensor paged_kv_last_page_len,
     at::Tensor o, std::optional<at::Tensor> maybe_lse, int64_t mask_mode_code, int64_t layout,
-    int64_t window_left ADDITIONAL_FUNC_PARAMS, int64_t cuda_stream) {
+    int64_t window_left ADDITIONAL_FUNC_PARAMS, int64_t cuda_stream,
+    std::optional<at::Tensor> bidir_attn_width_ptr,
+    std::optional<int64_t> bidir_attn_pad_len, 
+    std::optional<int64_t> bidir_max_img_size) {
   PrefillPlanSM90Info plan_info;
   plan_info.FromVector(tensor_to_vec(plan_info_vec));
 
@@ -236,6 +241,15 @@ void BatchPrefillWithPagedKVCacheSM90Run(
         params.kv_indices = static_cast<IdType*>(paged_kv_indices.data_ptr());
 
         ADDITIONAL_PARAMS_SETTER
+
+        params.batch_indices =
+            GetPtrFromBaseOffset<IdType>(int_buffer_ptr, plan_info.batch_indices_offset);
+        params.additional_params.bidir_attn_width_ptr = bidir_attn_width_ptr.has_value()
+            ? static_cast<uint32_t*>(bidir_attn_width_ptr.value().data_ptr()): nullptr;
+        params.additional_params.bidir_attn_pad_len = bidir_attn_pad_len.has_value()
+            ? static_cast<uint32_t>(bidir_attn_pad_len.value()): 0;
+        params.additional_params.bidir_max_img_size = bidir_max_img_size.has_value()
+            ? static_cast<uint32_t>(bidir_max_img_size.value()) : 0;
 
         bool same_schedule_for_all_heads = plan_info.same_schedule_for_all_heads;
         DISPATCH_BOOL(same_schedule_for_all_heads, SAME_SCHEDULER_FOR_ALL_HEADS, [&] {

@@ -705,7 +705,8 @@ __device__ __forceinline__ void logits_mask(
     const uint32_t qo_packed_idx_base, const uint32_t kv_idx_base, const uint32_t qo_len,
     const uint32_t kv_len, const uint32_t chunk_end, const uint_fastdiv group_size,
     typename KTraits::DTypeQKAccum (*s_frag)[KTraits::NUM_MMA_KV][8], const dim3 tid = threadIdx,
-    const uint32_t kv_head_idx = blockIdx.z) {
+    const uint32_t kv_head_idx = blockIdx.z,
+    __restrict__ uint32_t* bidir_ptr = nullptr) {
   const uint32_t lane_idx = tid.x;
   constexpr uint32_t NUM_MMA_Q = KTraits::NUM_MMA_Q;
   constexpr uint32_t NUM_MMA_KV = KTraits::NUM_MMA_KV;
@@ -731,13 +732,18 @@ __device__ __forceinline__ void logits_mask(
                                                                     2 * (lane_idx % 4) +
                                                                     8 * (reg_id / 4) + reg_id % 2;
         const uint32_t qo_head_idx = kv_head_idx * group_size + r[mma_q][(reg_id % 4) / 2];
-        const bool mask =
+        bool mask;
+        if constexpr (MASK_MODE == MaskMode::kBidir) {
+          mask = ((q_idx < qo_len) ? (kv_idx >= bidir_ptr[q_idx]) : false);
+        } else {
+          mask =
             (!(MASK_MODE == MaskMode::kCausal
                    ? (kv_idx + qo_len > kv_len + q_idx || (kv_idx >= chunk_end))
                    : kv_idx >= chunk_end)) &&
             variant.LogitsMask(params, batch_idx, q_idx, kv_idx, qo_head_idx, kv_head_idx);
         s_frag[mma_q][mma_kv][reg_id] =
             (mask) ? s_frag[mma_q][mma_kv][reg_id] : (KTraits::MaskFillValue);
+        }
       }
     }
   }
@@ -1383,10 +1389,14 @@ __device__ __forceinline__ void SinglePrefillWithKVCacheDevice(
 
       // apply mask
       if (MASK_MODE == MaskMode::kCustom || (iter >= mask_iteration || iter < window_iteration)) {
+        uint32_t* bidir_ptr = nullptr;
+        if constexpr (MASK_MODE == MaskMode::kBidir) {
+          bidir_ptr = params.bidir_attn_width_ptr + bx * params.bidir_attn_pad_len;
+        }
         logits_mask<KTraits>(
             params, variant, /*batch_idx=*/0, qo_packed_idx_base,
             chunk_start + (iter * NUM_WARPS_KV + get_warp_idx_kv<KTraits>(tid.z)) * NUM_MMA_KV * 16,
-            qo_len, kv_len, chunk_end, group_size, s_frag, tid, kv_head_idx);
+            qo_len, kv_len, chunk_end, group_size, s_frag, tid, kv_head_idx, bidir_ptr);
       }
 
       // compute m,d states in online softmax
@@ -2051,9 +2061,10 @@ __device__ __forceinline__ void BatchPrefillWithPagedKVCacheDevice(
     cp_async::commit_group();
 
     const uint32_t num_iterations = ceil_div(
-        (MASK_MODE == MaskMode::kCausal
+        (MASK_MODE == MaskMode::kCausal || MASK_MODE == MaskMode::kBidir
              ? min(chunk_size, sub_if_greater_or_zero(
-                                   kv_len - qo_len + ((qo_tile_idx + 1) * CTA_TILE_Q) / group_size,
+                                   kv_len - qo_len + ((qo_tile_idx + 1) * CTA_TILE_Q) / group_size
+                                   + (MASK_MODE == MaskMode::kBidir ? params.bidir_max_img_size : 0),
                                    chunk_start))
              : chunk_size),
         CTA_TILE_KV);
@@ -2064,7 +2075,7 @@ __device__ __forceinline__ void BatchPrefillWithPagedKVCacheDevice(
                  CTA_TILE_KV);
 
     const uint32_t mask_iteration =
-        (MASK_MODE == MaskMode::kCausal
+        (MASK_MODE == MaskMode::kCausal || MASK_MODE == MaskMode::kBidir
              ? min(chunk_size,
                    sub_if_greater_or_zero(kv_len + (qo_tile_idx * CTA_TILE_Q) / group_size - qo_len,
                                           chunk_start))

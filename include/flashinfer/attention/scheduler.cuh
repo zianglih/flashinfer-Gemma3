@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <sstream>
 #include <vector>
+#include <optional>
 
 #include "../allocator.h"
 #include "../exception.h"
@@ -791,6 +792,8 @@ struct PrefillPlanSM90Info {
   int64_t work_indptr_offset;
   bool same_schedule_for_all_heads;
 
+  int64_t batch_indices_offset;
+
   PrefillPlanSM90Info()
       : qo_tile_indices_offset(0),
         qo_indptr_offset(0),
@@ -834,7 +837,8 @@ inline cudaError_t PrefillSM90Plan(
     PrefillPlanSM90Info& plan_info, IdType* qo_indptr_h, IdType* kv_indptr_h, IdType* kv_len_arr_h,
     uint32_t total_num_rows, uint32_t batch_size, uint32_t num_qo_heads, uint32_t num_kv_heads,
     uint32_t head_dim_qk, uint32_t head_dim_vo, uint32_t page_size, bool causal,
-    bool enable_cuda_graph, uint32_t sizeof_dtype_o, cudaStream_t stream) {
+    bool enable_cuda_graph, uint32_t sizeof_dtype_o, cudaStream_t stream,
+    std::optional<bool> bidir, std::optional<uint32_t> bidir_max_img_size) {
   if (num_qo_heads % num_kv_heads != 0) {
     std::ostringstream err_msg;
     err_msg << "num_qo_heads " << num_qo_heads << " should be divisible by num_kv_heads "
@@ -881,6 +885,8 @@ inline cudaError_t PrefillSM90Plan(
       cta_kv_len(num_sm90_ctas, std::vector<IdType>()),
       cta_head_indices(num_sm90_ctas, std::vector<IdType>());
 
+  std::vector<std::vector<IdType>> cta_batch_indices_offsets(num_sm90_ctas, std::vector<IdType>());
+
   int max_num_works_per_head = ceil_div(total_num_rows, cta_tile_q) + batch_size - 1;
   plan_info.same_schedule_for_all_heads = max_num_works_per_head > 4096;
 
@@ -892,17 +898,25 @@ inline cudaError_t PrefillSM90Plan(
         auto [cta_idx, accum_cost] = cta_cost_heap.pop();
         // NOTE(Zihao): our current FA3 implementation do not fuse query and group heads
         // so the group_size in cost_function is always 1
+        if (bidir.has_value() && bidir.value()) {
+          const uint32_t bidir_kv_len =
+              kv_len + bidir_max_img_size.value() - (num_qo_tiles - qo_tile_idx - 1) * cta_tile_q;
+          cta_cost_heap.insert(
+              {cta_idx, accum_cost + cost_function(cta_tile_q, min(kv_len, bidir_kv_len))});
+        } else {
         cta_cost_heap.insert(
             {cta_idx, accum_cost + cost_function(cta_tile_q, causal ? kv_len - (num_qo_tiles -
                                                                                 qo_tile_idx - 1) *
                                                                                    cta_tile_q
                                                                     : kv_len)});
+        }
         cta_qo_tile_indices[cta_idx].push_back(qo_tile_idx);
         cta_qo_indptr[cta_idx].push_back(qo_indptr_h[i]);
         cta_qo_len[cta_idx].push_back(qo_len);
         cta_kv_indptr[cta_idx].push_back(kv_indptr_h[i]);
         cta_kv_len[cta_idx].push_back(kv_len);
         cta_head_indices[cta_idx].push_back(qo_head_idx);
+        cta_batch_indices_offsets[cta_idx].push_back(i);
       }
     }
   }
@@ -965,6 +979,13 @@ inline cudaError_t PrefillSM90Plan(
   std::copy(kv_len_vec.begin(), kv_len_vec.end(), kv_len_h);
   std::copy(head_indices_vec.begin(), head_indices_vec.end(), head_indices_h);
   std::copy(work_indptr_vec.begin(), work_indptr_vec.end(), work_indptr_h);
+
+  auto batch_indices_vec = flatten(cta_batch_indices_offsets, total_num_works);
+  plan_info.batch_indices_offset = int_allocator.aligned_alloc_offset(
+      sizeof(IdType) * max_total_num_works, 16, "batch_prefill_sm90_batch_indices");
+  IdType* batch_indices_h = 
+      GetPtrFromBaseOffset<IdType>(page_locked_int_buffer, plan_info.batch_indices_offset);
+  std::copy(batch_indices_vec.begin(), batch_indices_vec.end(), batch_indices_h);
 
   size_t num_bytes_to_copy = int_allocator.num_allocated_bytes();
   FLASHINFER_CUDA_CALL(cudaMemcpyAsync(int_buffer, page_locked_int_buffer, num_bytes_to_copy,

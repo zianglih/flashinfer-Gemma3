@@ -86,6 +86,7 @@ struct BatchPrefillPersistentTileScheduler {
         *kv_lens;
     cutlass::FastDivmod group_size_fastdiv;
     int num_qo_heads;  // placeholder
+    IdType *batch_indices;
   };
 
   // Device side kernel params
@@ -93,11 +94,13 @@ struct BatchPrefillPersistentTileScheduler {
     IdType *work_indptr, *head_indices, *qo_tile_indices, *qo_indptr, *kv_indptr, *qo_lens,
         *kv_lens;
     cutlass::FastDivmod group_size_fastdiv;
+    IdType *batch_indices;
   };
 
   static Params to_underlying_arguments(Arguments const& args) {
     return {args.work_indptr, args.head_indices, args.qo_tile_indices, args.qo_indptr,
-            args.kv_indptr,   args.qo_lens,      args.kv_lens,         args.group_size_fastdiv};
+            args.kv_indptr,   args.qo_lens,      args.kv_lens,         args.group_size_fastdiv,
+            args.batch_indices};
   }
 
   static dim3 get_grid_dim(Arguments const& args, int num_sm) { return {(unsigned)num_sm}; }
@@ -113,6 +116,7 @@ struct BatchPrefillPersistentTileScheduler {
     int counter = 0;
     int ptr_begin = 0;
     int ptr_end = 0;
+    int batch_idx = 0;
 
     CUTLASS_DEVICE
     bool is_valid(Params const& params) const { return counter + ptr_begin < ptr_end; }
@@ -144,9 +148,10 @@ struct BatchPrefillPersistentTileScheduler {
               params.kv_lens[work_idx],
               /*counter=*/0,
               ptr_begin,
-              ptr_end};
+              ptr_end,
+              params.batch_indices[work_idx]};
     } else {
-      return {-1, -1, -1, -1, -1, -1, 0, ptr_begin, ptr_end};
+      return {-1, -1, -1, -1, -1, -1, 0, ptr_begin, ptr_end, -1};
     }
   }
 
@@ -175,7 +180,8 @@ struct BatchPrefillPersistentTileScheduler {
               params.kv_lens[work_idx],
               current_work.counter + 1,
               current_work.ptr_begin,
-              current_work.ptr_end};
+              current_work.ptr_end,
+              params.batch_indices[work_idx]};
     } else {
       return {-1,
               -1,
@@ -185,7 +191,8 @@ struct BatchPrefillPersistentTileScheduler {
               -1,
               current_work.counter + 1,
               current_work.ptr_begin,
-              current_work.ptr_end};
+              current_work.ptr_end,
+              -1};
     }
   }
 };
@@ -202,6 +209,7 @@ struct BatchPrefillTileScheduler {
         *kv_lens;  // head_indices is a placeholder
     cutlass::FastDivmod group_size_fastdiv;
     int num_qo_heads;
+    IdType *batch_indices;
   };
 
   // Device side kernel params
@@ -209,11 +217,13 @@ struct BatchPrefillTileScheduler {
     IdType *work_indptr, *qo_tile_indices, *qo_indptr, *kv_indptr, *qo_lens, *kv_lens;
     cutlass::FastDivmod group_size_fastdiv;
     int num_qo_heads;
+    IdType *batch_indices;
   };
 
   static Params to_underlying_arguments(Arguments const& args) {
     return {args.work_indptr, args.qo_tile_indices, args.qo_indptr,          args.kv_indptr,
-            args.qo_lens,     args.kv_lens,         args.group_size_fastdiv, args.num_qo_heads};
+            args.qo_lens,     args.kv_lens,         args.group_size_fastdiv, args.num_qo_heads,
+            args.batch_indices};
   }
 
   static dim3 get_grid_dim(Arguments const& args, int num_sm) {
@@ -231,6 +241,7 @@ struct BatchPrefillTileScheduler {
     int counter = 0;
     int ptr_begin = 0;
     int ptr_end = 0;
+    int batch_idx = 0;
 
     CUTLASS_DEVICE
     bool is_valid(Params const& params) const { return counter + ptr_begin < ptr_end; }
@@ -262,9 +273,10 @@ struct BatchPrefillTileScheduler {
               params.kv_lens[work_idx],
               /*counter=*/0,
               ptr_begin,
-              ptr_end};
+              ptr_end,
+              params.batch_indices[work_idx]};
     } else {
-      return {-1, -1, -1, -1, -1, -1, 0, ptr_begin, ptr_end};
+      return {-1, -1, -1, -1, -1, -1, 0, ptr_begin, ptr_end, -1};
     }
   }
 
@@ -286,7 +298,8 @@ struct BatchPrefillTileScheduler {
               current_work.kv_head_idx,         params.qo_indptr[work_idx],
               params.kv_indptr[work_idx],       params.qo_lens[work_idx],
               params.kv_lens[work_idx],         current_work.counter + 1,
-              current_work.ptr_begin,           current_work.ptr_end};
+              current_work.ptr_begin,           current_work.ptr_end,
+              params.batch_indices[work_idx]};
     } else {
       return {-1,
               -1,
@@ -296,7 +309,8 @@ struct BatchPrefillTileScheduler {
               -1,
               current_work.counter + 1,
               current_work.ptr_begin,
-              current_work.ptr_end};
+              current_work.ptr_end,
+              -1};
     }
   }
 };
